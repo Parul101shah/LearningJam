@@ -1,0 +1,135 @@
+REST API is stateless:
+
+The server does NOT store client session data between requests.
+Every request must contain all the information needed to process it.
+
+1️⃣ What Happens in Backend (Step by Step)
+
+🔹 Step 1: Request Reaches Server
+In a Spring Boot app, the request first hits:
+DispatcherServlet
+🔹 Step 2: Authentication (if secured)
+🔹 Step 3: Controller Executes
+🔹 Step 4: Response Sent Back == Server sends JSON:
+
+🟢 Stateful (Traditional Servlet / Old Web Apps)
+
+1.Server creates HttpSession
+2.Stores user info in memory
+3.Each request uses same session
+4.Server remembers client
+
+
+**🏗 How It Scales in Real Backend**
+ 
+ Scenario 
+ Client → Load Balancer → Server1                            
+                          Server2
+                          Server3
+
+Because REST is stateless: (For 90% modern backend applications.)
+
+Request 1 → Server1
+Request 2 → Server3
+Request 3 → Server2
+
+It still works ✅
+Because no server depends on stored session.
+
+
+Why Stateless APIs?
+1️⃣ Easy Horizontal Scaling
+2️⃣ Works Perfectly with Load Balancer
+3️⃣ Better Fault Tolerance
+
+
+*----------------------------------*
+🔵 When to Prefer Stateful
+
+1. You need continuous interaction
+2. Real-time connection required
+
+
+🧠 Where Stateful Can Increase Latency
+
+1️⃣ Session Replication  == If state is shared across multiple servers:
+
+                      Server1 <-> Server2 <-> Server3
+
+They must sync session data.
+
+2️⃣ Sticky Sessions
+
+Load balancer sends you to same server every time.
+If that server is overloaded:
+
+ 1. You suffer latency
+ 2. Even if other servers are free
+
+ 3️⃣ Locking / Shared Memory
+
+If multiple threads update same state:
+
+synchronized(gameState) {
+   update();
+}
+
+Threads may wait → latency increases.
+
+
+
+**🎯 What Is Server Synchronization?**
+
+Server sync means:
+
+Multiple servers keeping their data/state consistent with each other.
+If one server changes something, other servers must know about it.
+
+🧠 Types of Server Sync
+
+1️⃣ Session Replication (Web Apps)
+
+Server1 copies session to Server2
+Used in traditional Java apps
+
+2️⃣ Shared Database
+
+All servers use same DB.
+
+Server1 → DB
+Server2 → DB
+Server3 → DB
+
+No need to sync memory.
+
+3️⃣ Distributed Cache (Redis)
+
+Instead of storing state in server memory:
+
+Server1 → Redis
+Server2 → Redis
+Server3 → Redis
+
+Now no need for direct server-to-server sync.
+
+4️⃣ Event-Based Sync (Kafka)
+
+One server updates → publishes event
+Other servers consume event → update themselves
+
+Used in microservices.
+
+
+**🚨 Why Server Sync Is Hard**
+
+Because of:
+
+Network delay
+Data conflicts
+Race conditions
+Eventual consistency problems
+
+That’s why stateless systems are simpler.
+
+
+**Stateless systems are preferred because they simplify scaling and remove the need for session synchronization. Stateful systems may introduce latency when multiple servers must synchronize shared state, but they are necessary for real-time applications.**

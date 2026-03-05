@@ -1,0 +1,64 @@
+🟥 Part 1: How Redis Clustering Works
+Redis = In-memory data store
+Very fast (microseconds level)
+
+When traffic increases, one Redis server is not enough.
+So we use Redis Cluster.
+
+🎯 What Redis Cluster Solves
+
+1. Data partitioning (sharding)
+2. High availability
+3. Fault tolerance
+4. Horizontal scaling
+
+🧠 Basic Idea
+
+Instead of:
+
+1 Redis Server
+
+We have:
+
+Redis Node A
+Redis Node B
+Redis Node C
+
+Data is split between them.
+
+
+**🟦 Part 2: What Role Does Kafka Play?**
+
+Kafka is NOT a cache.
+Kafka is NOT a database.
+Kafka is NOT shared memory.
+
+Kafka is an event streaming platform.
+
+* Kafka helps in:
+
+Asynchronous communication
+Event-driven architecture
+Decoupling microservices             -- Service A → Kafka → Service B
+Streaming pipelines
+Log processing
+Real-time analytics
+
+
+**🏗 Real-World Example**
+
+Suppose in e-commerce:
+
+User places order.
+
+Old way:
+
+Order Service → Call Payment Service
+Order Service → Call Inventory Service
+Order Service → Call Email Service
+
+If Email fails → Order flow breaks.
+
+With Kafka:
+
+Order Service → Publish ORDER_CREATED event
