@@ -1,0 +1,6 @@
+Spring introduced -->simplifies java enterprise application devlopment
+Key Pinciples: 1.Simplicity
+               2.Modularity -- encourage modular app architecture using loose coupling
+               3.Testability -- promote prog practices like interfaces , dependency injection etc
+
+
