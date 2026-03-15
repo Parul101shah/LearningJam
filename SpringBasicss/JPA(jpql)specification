@@ -1,0 +1,27 @@
+ORM frameworks : Hibernate,TopLink,iBatis
+Each framework had its own APIs, annotations, and query lang
+   
+   Timeline summary
+
+Year    Technology	    Purpose                                      
+~1998	JDBC      	    Direct SQL in Java
+~2001	Hibernate	    First popular ORM     ~~Your code depended heavily on a specific ORM (like Hibernate).
+~2001	HQL	            Hibernate query language
+2006	JPA	            Standard ORM specification   ~~It is a specification (rules) for how ORM frameworks should work.
+2006	JPQL	        Standard query language                   Write code once ,Change ORM implementation if needed
+
+
+Where Spring Boot fits
+
+Spring Boot
+     ↓
+Spring Data JPA
+     ↓
+JPA specification
+     ↓
+Hibernate implementation
+     ↓
+Database
+
+
+
