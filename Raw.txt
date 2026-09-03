@@ -1,0 +1,25 @@
+{
+  "education": "B.Tech in Computer Science",
+  "email": "parulpd153@gmail.com",
+  "fullName": "Parul Shah",
+  "id": 1,
+  "minSalary": 7,
+  "pastRoles": [
+    "Software Engineer",
+    "Backend Developer"
+  ],
+  "preferredLocation": "Hyderabad",
+  "profileSummary": "Java backend developer with experience in Spring Boot and PostgreSQL.",
+  "resumeText": "Parul Shah\r\nparulpd153@gmail.com | linkedin.com/in/shah-parul\r\nEDUCATION\r\nGRAPHIC ERAUNIVERSITY\r\nB.Tech in Computer Science\r\nDehradun, Uttarakhand\r\nSept 2020-June 2024\r\nCGPA: 8.77 / 10.0\r\nHAYDEHERITAGEACADEMY\r\nIntermediate | C.B.S.C\r\n2020\r\nMarks(%): 86%\r\nST. JOSEPH’S CONVENT\r\nHighschool | I.C.S.C\r\n2018\r\nMarks(%): 82.5%\r\nLINKS\r\nGithub:// parul.github\r\nLinkedIn:// parul.in\r\nLeetcode:// parul.lcode\r\nPortfolio:// parul.portfolio\r\nTECHNICAL SKILLS\r\nLANGUAGES\r\n• Java\r\n• Python\r\n• SQL\r\n•C++\r\nBACKEND\r\n• Spring Boot\r\n• Spring Security\r\n• JWT\r\n• REST APIs\r\nDATABASES\r\n• PostgreSQL\r\n•MySQL\r\n•MongoDB\r\nCLOUD&DEVOPS\r\n• Azure (Data Factory · ADLS · Event\r\nHubs · Databricks)\r\n•AWS (basic)\r\nTOOLS\r\n•Git\r\n• JPA/Hibernate\r\n• Postman\r\n•Maven\r\nEXPERIENCE\r\nSOFTWARE SYSTEMS ENGINEER [Oct 2024 - Present]\r\nHost Organization: Coforge\r\n•Contribute to backend feature development and production fixes\r\nfor Sabre’s airline reservation system (Java), handling medium-to-high\r\ncomplexity tickets.\r\n•Perform log-driven debugging, issue recreation, and Java based TDS\r\nvalidation scripting to support root-cause analysis and reliable system\r\nfixes.\r\nPROJECTS\r\nSCALABLE ETL FOR FINANCIALDATA\r\n• Built end-to-endAzureETLpipeline followingMedallionArchitec-\r\nture (Bronze-> Silver-> Gold) for batch ingestion, transformation,\r\nand Power BI reporting.\r\n• Implemented real-time fraud detection using Azure Event Hubs\r\nandDatabricks for low-latency ingestion and processing of live fi-\r\nnancial transactions into Azure SQL and Power BI reports for risk\r\nmanagement.\r\n• Technologies: Azure: Data Factory, ADLS, Databricks, Azure\r\nSQL, Event Hubs, Power BI.\r\n• Project Link : github.com/Parul101shah/BFSI_ETLpipeline\r\nECOMMERCE SPRINGBOOTAPP\r\n• Developing a full-stack e-commerce platform using (Spring Boot,\r\nReact, PostgreSQL) with JWT authentication and RBAC across\r\ncustomer, seller, and admin roles.\r\n• Designed paginated REST APIs with JPA/Hibernate; integrating\r\nStripe payments and admin modules for order and inventory man-\r\nagement.\r\n• Deploying on AWS EC2 + S3withDocker containerisation; state-\r\nless JWT architecture enables horizontal scaling without session\r\nstate.\r\n• Technologies: Spring Boot, React, PostgreSQL, Spring Security,\r\nJWT, Stripe, AWS, Docker\r\n• Project Link : github.com/Parul101shah/Ecommerce_App\r\nCERTIFICATES\r\nCOFORGE GET - DATA ENGINEERING [Nov 2024 - Feb 2025] Host\r\nOrganization: Great Learning\r\n• Completed advanced training in Python, SQL, MongoDB, Hadoop,\r\nSpark, and Azure, focusing on data pipeline development and large-\r\nscale data processing.\r\n•Applieddatapreprocessing,EDA, andcloud-baseddeploymentwork-\r\nflows for analytics-ready datasets.\r\n",
+  "skills": [
+    "Java",
+    "Spring Boot",
+    "PostgreSQL",
+    "Docker"
+  ],
+  "targetRoles": [
+    "Java Developer",
+    "Spring Boot Developer"
+  ],
+  "totalExperienceYears": 2
+}
