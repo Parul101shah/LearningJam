@@ -52,3 +52,25 @@
         "Location does not match preferred location"
       ]
     },
+
+
+private String htmlToText(String raw) {
+    if (!StringUtils.hasText(raw)) return "";
+    String html = HtmlUtils.htmlUnescape(raw);          // &lt;h2&gt; -> <h2>
+    String text = html
+            .replaceAll("(?i)<br\\s*/?>", "\n")
+            .replaceAll("(?i)</(p|h[1-6]|div|ul|ol)>", "\n\n")
+            .replaceAll("(?i)<li[^>]*>", "• ")
+            .replaceAll("(?i)</li>", "\n")
+            .replaceAll("<[^>]+>", "");                 // strip remaining tags
+    text = HtmlUtils.htmlUnescape(text)                 // &nbsp; &amp; &#39; (double-encoded)
+            .replace('\u00A0', ' ');
+    return text.replaceAll("[ \\t]+\n", "\n")
+               .replaceAll("\n{3,}", "\n\n")
+               .trim();
+}
+
+import com.fasterxml.jackson.annotation.JsonFormat;
+
+@JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd HH:mm 'UTC'", timezone = "UTC")
+private Instant postedAt;
