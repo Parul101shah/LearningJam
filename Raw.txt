@@ -1,120 +1,56 @@
-scoring:
-  weights:
-    roleMatch: 25
-    skillsMatch: 30
-    experienceMatch: 20
-    locationMatch: 10
-    recencyMatch: 15
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-mail</artifactId>
+</dependency>
+<dependency>
+  <groupId>com.github.librepdf</groupId>
+  <artifactId>openpdf</artifactId>
+  <version>2.0.3</version>
+</dependency>
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-validation</artifactId>
+</dependency>
 
-  thresholds:
-    high: 60
-    medium: 40
-    low: 25
-    reject: 20
-  blend:
-    keywordWeight: 80
-    aiWeight: 20
-    aiEnabled: true
-    aiMaxCandidates: 8
-    aiMinKeywordScore: 20
+spring:
+  mail:
+    host: smtp.gmail.com
+    port: 587
+    username: ${MAIL_USER}
+    password: ${MAIL_APP_PASSWORD}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+  ai:
+    openai:
+      chat:
+        options:
+          temperature: 0.2
+app:
+  base-url: http://localhost:8080
+  mail-from: ${MAIL_USER}
+  confirmation-days: 7
 
-  roleAliases:
-    "java developer":
-      - "backend engineer"
-      - "software engineer"
-      - "java engineer"
-      - "java backend"
-    "spring boot developer":
-      - "backend engineer"
-      - "spring engineer"
-      - "java backend"
-      - "software engineer"
-    "backend engineer":
-      - "java developer"
-      - "software engineer"
-      - "api developer"
-    "software engineer":
-      - "backend engineer"
-      - "java developer"
-      - "full stack engineer"
-    "data engineer":
-      - "data analyst"
-      - "analytics engineer"
 
-  skillAliases:
-    "spring boot":
-      - "spring"
-      - "spring framework"
-    "postgresql":
-      - "postgres"
-    "java":
-      - "java 8"
-      - "java 11"
-      - "java 17"
-    "python":
-      - "python 3"
-    "javascript":
-      - "js"
-      - "node.js"
-      - "nodejs"
-    "react":
-      - "reactjs"
-      - "react.js"
-    "docker":
-      - "containerization"
-    "kubernetes":
-      - "k8s"
-    "aws":
-      - "amazon web services"
-    "gcp":
-      - "google cloud"
-    "azure":
-      - "microsoft azure"
-    "scala":
-      - "scala 2.12"
-      - "scala 2.13"
+package org.example.jobautomation.dto;
 
-  keywordSignals:
-    backend_engineering:
-      - "backend"
-      - "software engineer"
-      - "api"
-      - "microservices"
-      - "rest api"
-      - "distributed systems"
-      - "database"
-      - "server-side"
-    java_tech:
-      - "java"
-      - "spring"
-      - "spring boot"
-      - "jpa"
-      - "hibernate"
-    database_tech:
-      - "postgresql"
-      - "postgres"
-      - "mysql"
-      - "mongodb"
-      - "sql"
-      - "redis"
-    cloud_tech:
-      - "aws"
-      - "docker"
-      - "kubernetes"
-      - "devops"
-    data_engineering:
-      - "etl"
-      - "data pipeline"
-      - "data warehouse"
+import java.util.List;
 
-  recency:
-    veryRecentDays: 7
-    recentDays: 30
+public record TailoredResume(
+        String fullName, String email, String phone, String location,
+        String headline, String summary,
+        List<String> skills,
+        List<Experience> experience,
+        List<Project> projects,
+        List<String> education,
+        List<String> certifications) {
 
-  location:
-    remoteKeywords:
-      - "remote"
-    regionKeywords:
-      - "us"
-      - "canada"
-      - "india"
+    public record Experience(String title, String company, String period, List<String> bullets) {}
+    public record Project(String name, String techStack, List<String> bullets) {}
+}
+
+package org.example.jobautomation.dto;
+
+public record HighMatchDto(
+        String token, String title, String company, String location, String jobUrl,
+        int matchScore, int keywordScore, int aiScore, String aiSummary) {}
