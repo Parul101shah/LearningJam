@@ -1,69 +1,81 @@
 package org.example.jobautomation.service.match;
 
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
-import org.example.jobautomation.dto.JobDiscoveryResponse;
-import org.example.jobautomation.dto.JobMatchRequest;
-import org.example.jobautomation.dto.JobMatchResponseDto;
+import org.example.jobautomation.dto.AiScoreResultDto;
+import org.example.jobautomation.dto.JobListingDto;
 import org.example.jobautomation.dto.JobMatchResultDto;
+import org.example.jobautomation.dto.KeywordScoreResultDto;
 import org.example.jobautomation.entity.UserProfile;
-import org.example.jobautomation.service.UserProfileService;
-import org.example.jobautomation.service.discovery.JobDiscoveryService;
+import org.example.jobautomation.service.match.config.ScoringConfigProperties;
 import org.springframework.stereotype.Service;
 
-import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.stream.Collectors;
 
 @Service
-@Slf4j
 @RequiredArgsConstructor
-public class JobMatchService {
+public class CombinedJobScoringService {
 
-    private final UserProfileService userProfileService;
-    private final JobDiscoveryService jobDiscoveryService;
-    private final CombinedJobScoringService combinedJobScoringService;
-    private final ExecutorService jobScoringExecutor;
+    private final KeywordJobScoringService keywordJobScoringService;
+    private final AiJobScoringService aiJobScoringService;
+    private final ScoringConfigProperties scoringConfig;
 
-    public JobMatchResponseDto matchJobs(Long userId, JobMatchRequest request) {
-        UserProfile profile = userProfileService.getProfile(userId);
+    public KeywordScoreResultDto keywordScore(UserProfile profile, JobListingDto job) {
+        return keywordJobScoringService.score(profile, job);
+    }
 
-        JobDiscoveryResponse discoveryResponse =
-                jobDiscoveryService.discoverJobs(request.getJobSearchRequest());
+    /** Keyword-only result: used for jobs that didn't make the AI shortlist. */
+    public JobMatchResultDto buildKeywordOnly(JobListingDto job, KeywordScoreResultDto kw) {
+        return build(job, kw, null);
+    }
 
-        Integer minimumScore = request.getMinimumScore() != null ? request.getMinimumScore() : 30;
+    /** Calls the LLM, then blends. Slow, so call it only for shortlisted jobs. */
+    public JobMatchResultDto scoreWithAi(UserProfile profile, JobListingDto job, KeywordScoreResultDto kw) {
+        return build(job, kw, aiJobScoringService.score(profile, job));
+    }
 
-        // Phase 1: submit all scoring tasks (returns immediately, work runs on the pool)
-        List<CompletableFuture<JobMatchResultDto>> futures = discoveryResponse.getJobs().stream()
-                .map(job -> CompletableFuture
-                        .supplyAsync(() -> combinedJobScoringService.score(profile, job), jobScoringExecutor)
-                        .exceptionally(ex -> {
-                            log.warn("Scoring failed for job {}: {}", job.getExternalJobId(), ex.toString());
-                            return null; // one bad job must not fail the whole request
-                        }))
-                .toList();
+    private JobMatchResultDto build(JobListingDto job, KeywordScoreResultDto kw, AiScoreResultDto ai) {
+        int keywordScore = safe(kw.getTotalScore());
+        boolean aiUsed = ai != null && !"UNKNOWN".equals(ai.getMatchLevel()); // fallback = AI failed
+        int aiScore = aiUsed ? safe(ai.getScore()) : 0;
 
-        // Phase 2: wait for all, then filter and sort as before
-        List<JobMatchResultDto> results = futures.stream()
-                .map(CompletableFuture::join)
-                .filter(Objects::nonNull)
-                .filter(result -> Boolean.TRUE.equals(request.getIncludeRejected())
-                        || result.getMatchScore() >= minimumScore)
-                .sorted(Comparator.comparing(JobMatchResultDto::getMatchScore).reversed())
-                .collect(Collectors.toList());
+        int finalScore = aiUsed ? combine(keywordScore, aiScore) : keywordScore;
 
-        if (request.getLimit() != null && request.getLimit() > 0 && request.getLimit() < results.size()) {
-            results = results.subList(0, request.getLimit());
+        List<String> reasons = new ArrayList<>();
+        List<String> concerns = new ArrayList<>();
+        if (kw.getReasons() != null) reasons.addAll(kw.getReasons());
+        if (kw.getConcerns() != null) concerns.addAll(kw.getConcerns());
+        if (aiUsed) {
+            if (ai.getReasons() != null) reasons.addAll(ai.getReasons());
+            if (ai.getConcerns() != null) concerns.addAll(ai.getConcerns());
         }
 
-        return new JobMatchResponseDto(
-                userId,
-                discoveryResponse.getTotalJobs(),
-                results.size(),
-                results
-        );
+        return new JobMatchResultDto(
+                job, finalScore, keywordScore, aiScore,
+                aiUsed ? ai.getSummary() : "AI scoring skipped (keyword score only)",
+                determineLevel(finalScore), reasons, concerns);
+    }
+
+    private int combine(int keywordScore, int aiScore) {
+        var blend = scoringConfig.getBlend();
+        int total = blend.getKeywordWeight() + blend.getAiWeight();
+        return (keywordScore * blend.getKeywordWeight() + aiScore * blend.getAiWeight()) / total;
+    }
+
+    private String determineLevel(int score) {
+        if (score >= scoringConfig.getThresholds().getHigh()) {
+            return "HIGH";
+        }
+        if (score >= scoringConfig.getThresholds().getMedium()) {
+            return "MEDIUM";
+        }
+        if (score >= scoringConfig.getThresholds().getLow()) {
+            return "LOW";
+        }
+        return "REJECT";
+    }
+
+    private int safe(Integer value) {
+        return value == null ? 0 : value;
     }
 }
