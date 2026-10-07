@@ -1,70 +1,393 @@
+ResumeTailoringService
 
-ResumeConfirmation
+package org.example.jobautomation.service.resume;
 
-package org.example.jobautomation.entity;
+import lombok.RequiredArgsConstructor;
+import org.example.jobautomation.dto.JobListingDto;
+import org.example.jobautomation.dto.TailoredResume;
+import org.example.jobautomation.entity.UserProfile;
+import org.example.jobautomation.service.match.JobTextNormalizer;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.stereotype.Service;
 
-import jakarta.persistence.*;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import org.example.jobautomation.dto.JobSourceType;
+@Service
+@RequiredArgsConstructor
+public class ResumeTailoringService {
+
+    private static final int MAX_JD = 4000;
+    private final ChatClient.Builder chatClientBuilder;
+    private final JobTextNormalizer normalizer;
+
+    public TailoredResume tailor(UserProfile p, JobListingDto job) {
+        String jd = normalizer.toPlainText(job.getDescription());
+        if (jd != null && jd.length() > MAX_JD) jd = jd.substring(0, MAX_JD);
+
+        return chatClientBuilder.build().prompt()
+                .system("""
+                        You are an expert resume writer. Given a job description and a candidate
+                        profile, customize the resume to highlight relevant experience.
+                        RULES:
+                        - Use ONLY facts present in the base resume. Never invent employers,
+                          dates, degrees, skills or metrics.
+                        - Reorder and reword bullets to emphasize relevance to the job.
+                        - Use the job's keywords only where the candidate genuinely has the skill.
+                        - Keep it to one page: max 4 bullets per role, summary max 3 lines.
+                        - Return only the requested structured JSON.
+                        """)
+                .user(u -> u.text("""
+                                BASE RESUME:
+                                {resume}
+
+                                CANDIDATE PROFILE:
+                                Name: {name}; Email: {email}; Location: {loc}
+                                Skills: {skills}; Experience: {years} years; Education: {edu}
+
+                                JOB: {title} at {company} ({jobLoc})
+                                {jd}
+                                """)
+                        .param("resume", nz(p.getResumeText()))
+                        .param("name", nz(p.getFullName()))
+                        .param("email", nz(p.getEmail()))
+                        .param("loc", nz(p.getPreferredLocation()))
+                        .param("skills", String.valueOf(p.getSkills()))
+                        .param("years", String.valueOf(p.getTotalExperienceYears()))
+                        .param("edu", nz(p.getEducation()))
+                        .param("title", nz(job.getTitle()))
+                        .param("company", nz(job.getCompany()))
+                        .param("jobLoc", nz(job.getLocation()))
+                        .param("jd", nz(jd)))
+                .call()
+                .entity(TailoredResume.class);
+    }
+
+    private String nz(String s) { return s == null ? "" : s; }
+}
+
+
+ResumePdfBuilder
+
+package org.example.jobautomation.service.resume;
+
+import com.lowagie.text.*;
+import com.lowagie.text.pdf.PdfWriter;
+import org.example.jobautomation.dto.TailoredResume;
+import org.springframework.stereotype.Component;
+
+import java.io.ByteArrayOutputStream;
+import java.util.List;
+
+@Component
+public class ResumePdfBuilder {
+
+    private static final Font NAME = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 18);
+    private static final Font H = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 11);
+    private static final Font B = FontFactory.getFont(FontFactory.HELVETICA, 10);
+    private static final Font BB = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 10);
+
+    public byte[] build(TailoredResume r) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Document doc = new Document(PageSize.A4, 40, 40, 36, 36);
+            PdfWriter.getInstance(doc, out);
+            doc.open();
+
+            doc.add(new Paragraph(nz(r.fullName()), NAME));
+            doc.add(new Paragraph(join(" | ", r.email(), r.phone(), r.location()), B));
+            if (has(r.headline())) doc.add(new Paragraph(r.headline(), BB));
+
+            section(doc, "SUMMARY");
+            doc.add(new Paragraph(nz(r.summary()), B));
+
+            if (r.skills() != null && !r.skills().isEmpty()) {
+                section(doc, "SKILLS");
+                doc.add(new Paragraph(String.join(", ", r.skills()), B));
+            }
+
+            if (r.experience() != null && !r.experience().isEmpty()) {
+                section(doc, "EXPERIENCE");
+                for (var e : r.experience()) {
+                    doc.add(new Paragraph(join(" – ", e.title(), e.company(), e.period()), BB));
+                    bullets(doc, e.bullets());
+                }
+            }
+
+            if (r.projects() != null && !r.projects().isEmpty()) {
+                section(doc, "PROJECTS");
+                for (var p : r.projects()) {
+                    doc.add(new Paragraph(join(" | ", p.name(), p.techStack()), BB));
+                    bullets(doc, p.bullets());
+                }
+            }
+
+            if (r.education() != null && !r.education().isEmpty()) {
+                section(doc, "EDUCATION");
+                for (String s : r.education()) doc.add(new Paragraph(s, B));
+            }
+
+            if (r.certifications() != null && !r.certifications().isEmpty()) {
+                section(doc, "CERTIFICATIONS");
+                for (String s : r.certifications()) doc.add(new Paragraph(s, B));
+            }
+
+            doc.close();
+            return out.toByteArray();
+        } catch (Exception e) {
+            throw new IllegalStateException("PDF generation failed", e);
+        }
+    }
+
+    private void section(Document d, String title) throws DocumentException {
+        Paragraph p = new Paragraph(title, H);
+        p.setSpacingBefore(10);
+        d.add(p);
+    }
+
+    private void bullets(Document d, List<String> items) throws DocumentException {
+        if (items == null) return;
+        com.lowagie.text.List l = new com.lowagie.text.List(false, 10);
+        for (String s : items) l.add(new ListItem(new Phrase(s, B)));
+        d.add(l);
+    }
+
+    private boolean has(String s) { return s != null && !s.isBlank(); }
+    private String nz(String s) { return s == null ? "" : s; }
+
+    private String join(String sep, String... parts) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            if (has(p)) { if (sb.length() > 0) sb.append(sep); sb.append(p); }
+        }
+        return sb.toString();
+    }
+}
+
+
+MatchEmailService
+
+package org.example.jobautomation.service.notification;
+
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
+import lombok.RequiredArgsConstructor;
+import org.example.jobautomation.dto.HighMatchDto;
+import org.example.jobautomation.entity.UserProfile;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.stereotype.Service;
+import org.springframework.web.util.HtmlUtils;
+
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class MatchEmailService {
+
+    private final JavaMailSender mailSender;
+    @Value("${app.base-url}") private String baseUrl;
+    @Value("${app.mail-from}") private String from;
+
+    public void sendHighMatches(UserProfile user, List<HighMatchDto> jobs) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<h3>Hi ").append(esc(user.getFullName())).append(",</h3>")
+          .append("<p>These jobs are a high match. Click to confirm and we'll build a tailored resume.</p>");
+        for (HighMatchDto j : jobs) {
+            sb.append("<div style='border:1px solid #ddd;padding:12px;margin:12px 0'>")
+              .append("<b>").append(esc(j.title())).append("</b> – ").append(esc(j.company()))
+              .append("<br>📍 ").append(esc(j.location()))
+              .append("<br>Match <b>").append(j.matchScore()).append("</b> (keyword ")
+              .append(j.keywordScore()).append(", AI ").append(j.aiScore()).append(")")
+              .append("<p>").append(esc(j.aiSummary())).append("</p>")
+              .append("<a href='").append(baseUrl).append("/api/resumes/confirm/").append(j.token())
+              .append("'>✅ Build tailored resume</a> &nbsp; <a href='").append(esc(j.jobUrl()))
+              .append("'>View job</a></div>");
+        }
+        send(user.getEmail(), "🎯 " + jobs.size() + " high-match jobs – confirm resume build",
+                sb.toString(), null, null);
+    }
+
+    public void sendResume(UserProfile user, String jobTitle, String company, byte[] pdf) {
+        String body = "<p>Hi " + esc(user.getFullName()) + ",</p><p>Your tailored resume for <b>"
+                + esc(jobTitle) + "</b> at " + esc(company) + " is attached.</p>";
+        send(user.getEmail(), "Your tailored resume – " + jobTitle, body,
+                "resume-" + company.replaceAll("[^A-Za-z0-9]", "_") + ".pdf", pdf);
+    }
+
+    private void send(String to, String subject, String html, String attName, byte[] att) {
+        try {
+            MimeMessage msg = mailSender.createMimeMessage();
+            MimeMessageHelper h = new MimeMessageHelper(msg, att != null, "UTF-8");
+            h.setFrom(from);
+            h.setTo(to);
+            h.setSubject(subject);
+            h.setText(html, true);
+            if (att != null) h.addAttachment(attName, new ByteArrayResource(att));
+            mailSender.send(msg);
+        } catch (MessagingException e) {
+            throw new IllegalStateException("Email send failed", e);
+        }
+    }
+
+    private String esc(String s) { return s == null ? "" : HtmlUtils.htmlEscape(s); }
+}
+
+MatchNotificationService
+
+package org.example.jobautomation.service.notification;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.example.jobautomation.dto.*;
+import org.example.jobautomation.entity.ResumeConfirmation;
+import org.example.jobautomation.entity.UserProfile;
+import org.example.jobautomation.repository.ResumeConfirmationRepository;
+import org.example.jobautomation.service.UserProfileService;
+import org.example.jobautomation.service.match.JobMatchService;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
 
-@Entity
-@Table(name = "resume_confirmations",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"userId", "source", "externalJobId"}))
-@Data @NoArgsConstructor
-public class ResumeConfirmation {
-    public enum Status { PENDING, CONFIRMED, COMPLETED, FAILED }
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class MatchNotificationService {
 
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
-    @Column(unique = true, nullable = false) private String token;
-    private Long userId;
-    @Enumerated(EnumType.STRING) private JobSourceType source;
-    private String externalJobId;
-    private String jobTitle;
-    private String company;
-    @Column(columnDefinition = "TEXT") private String jobSnapshotJson;
-    private Instant expiresAt;
-    @Enumerated(EnumType.STRING) private Status status = Status.PENDING;
+    private final UserProfileService userProfileService;
+    private final JobMatchService jobMatchService;
+    private final ResumeConfirmationRepository confirmationRepo;
+    private final MatchEmailService emailService;
+    private final ObjectMapper objectMapper;
+    @Value("${app.confirmation-days:7}") private int confirmationDays;
+
+    /** Returns number of HIGH jobs emailed. */
+    public int notifyHighMatches(Long userId, JobMatchRequest request) {
+        UserProfile user = userProfileService.getProfile(userId);
+        if (!StringUtils.hasText(user.getEmail())) {
+            throw new IllegalStateException("User " + userId + " has no email");
+        }
+
+        JobMatchResponseDto result = jobMatchService.matchJobs(userId, request);
+        List<HighMatchDto> toSend = new ArrayList<>();
+
+        for (JobMatchResultDto m : result.getMatches()) {
+            if (!"HIGH".equals(m.getMatchLevel())) continue;
+            JobListingDto job = m.getJob();
+
+            if (confirmationRepo.existsByUserIdAndSourceAndExternalJobId(
+                    userId, job.getSource(), job.getExternalJobId())) {
+                continue; // already emailed before
+            }
+
+            ResumeConfirmation c = new ResumeConfirmation();
+            c.setToken(UUID.randomUUID().toString());
+            c.setUserId(userId);
+            c.setSource(job.getSource());
+            c.setExternalJobId(job.getExternalJobId());
+            c.setJobTitle(job.getTitle());
+            c.setCompany(job.getCompany());
+            c.setJobSnapshotJson(toJson(job));
+            c.setExpiresAt(Instant.now().plus(confirmationDays, ChronoUnit.DAYS));
+            confirmationRepo.save(c);
+
+            toSend.add(new HighMatchDto(c.getToken(), job.getTitle(), job.getCompany(),
+                    job.getLocation(), job.getJobUrl(),
+                    m.getMatchScore(), m.getKeywordScore(), m.getAiScore(), m.getAiSummary()));
+        }
+
+        if (!toSend.isEmpty()) emailService.sendHighMatches(user, toSend);
+        log.info("Emailed {} HIGH matches to user {}", toSend.size(), userId);
+        return toSend.size();
+    }
+
+    private String toJson(JobListingDto job) {
+        try { return objectMapper.writeValueAsString(job); }
+        catch (Exception e) { throw new IllegalStateException(e); }
+    }
 }
 
-GeneratedResume
+ResumeGenerationService
 
-package org.example.jobautomation.entity;
+package org.example.jobautomation.service.resume;
 
-import jakarta.persistence.*;
-import lombok.Data;
-import lombok.NoArgsConstructor;
-import org.example.jobautomation.dto.JobSourceType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.example.jobautomation.dto.JobListingDto;
+import org.example.jobautomation.dto.TailoredResume;
+import org.example.jobautomation.entity.*;
+import org.example.jobautomation.repository.*;
+import org.example.jobautomation.service.UserProfileService;
+import org.example.jobautomation.service.notification.MatchEmailService;
+import org.springframework.stereotype.Service;
+
 import java.time.Instant;
+import java.util.concurrent.ExecutorService;
 
-@Entity
-@Table(name = "generated_resumes",
-        uniqueConstraints = @UniqueConstraint(columnNames = {"userId", "source", "externalJobId"}))
-@Data @NoArgsConstructor
-public class GeneratedResume {
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY) private Long id;
-    private Long userId;
-    @Enumerated(EnumType.STRING) private JobSourceType source;
-    private String externalJobId;
-    private String jobTitle;
-    private String company;
-    @Column(columnDefinition = "TEXT") private String tailoredJson;
-    @Column(length = 10_000_000) private byte[] pdf;
-    private Instant createdAt = Instant.now();
-}
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class ResumeGenerationService {
 
+    private final ResumeConfirmationRepository confirmationRepo;
+    private final GeneratedResumeRepository resumeRepo;
+    private final UserProfileService userProfileService;
+    private final ResumeTailoringService tailoringService;
+    private final ResumePdfBuilder pdfBuilder;
+    private final MatchEmailService emailService;
+    private final ObjectMapper objectMapper;
+    private final ExecutorService jobScoringExecutor;
 
-package org.example.jobautomation.repository;
+    /** Validates token, marks CONFIRMED, runs generation in the background. */
+    public String confirm(String token) {
+        ResumeConfirmation c = confirmationRepo.findByToken(token).orElse(null);
+        if (c == null) return "Invalid link.";
+        if (c.getExpiresAt().isBefore(Instant.now())) return "This link has expired.";
+        if (c.getStatus() != ResumeConfirmation.Status.PENDING) {
+            return "This request was already processed (" + c.getStatus() + ").";
+        }
+        c.setStatus(ResumeConfirmation.Status.CONFIRMED);
+        confirmationRepo.save(c);
+        jobScoringExecutor.submit(() -> generate(c.getId()));
+        return "Thanks! Your resume for " + c.getJobTitle() + " at " + c.getCompany()
+                + " is being generated and will be emailed to you shortly.";
+    }
 
-public interface ResumeConfirmationRepository extends JpaRepository<ResumeConfirmation, Long> {
-    Optional<ResumeConfirmation> findByToken(String token);
-    boolean existsByUserIdAndSourceAndExternalJobId(Long userId, JobSourceType source, String externalJobId);
-}
+    void generate(Long confirmationId) {
+        ResumeConfirmation c = confirmationRepo.findById(confirmationId).orElseThrow();
+        try {
+            UserProfile user = userProfileService.getProfile(c.getUserId());
+            JobListingDto job = objectMapper.readValue(c.getJobSnapshotJson(), JobListingDto.class);
 
-package org.example.jobautomation.repository;
+            TailoredResume tailored = tailoringService.tailor(user, job);
+            byte[] pdf = pdfBuilder.build(tailored);
 
-public interface GeneratedResumeRepository extends JpaRepository<GeneratedResume, Long> {
-    Optional<GeneratedResume> findByUserIdAndSourceAndExternalJobId(Long userId, JobSourceType source, String jobId);
-    List<GeneratedResume> findByUserIdOrderByCreatedAtDesc(Long userId);
+            GeneratedResume g = resumeRepo
+                    .findByUserIdAndSourceAndExternalJobId(c.getUserId(), c.getSource(), c.getExternalJobId())
+                    .orElseGet(GeneratedResume::new);
+            g.setUserId(c.getUserId());
+            g.setSource(c.getSource());
+            g.setExternalJobId(c.getExternalJobId());
+            g.setJobTitle(c.getJobTitle());
+            g.setCompany(c.getCompany());
+            g.setTailoredJson(objectMapper.writeValueAsString(tailored));
+            g.setPdf(pdf);
+            g.setCreatedAt(Instant.now());
+            resumeRepo.save(g);
+
+            c.setStatus(ResumeConfirmation.Status.COMPLETED);
+            confirmationRepo.save(c);
+            emailService.sendResume(user, c.getJobTitle(), c.getCompany(), pdf);
+        } catch (Exception ex) {
+            log.error("Resume generation failed for confirmation {}", confirmationId, ex);
+            c.setStatus(ResumeConfirmation.Status.FAILED);
+            confirmationRepo.save(c);
+        }
+    }
 }
