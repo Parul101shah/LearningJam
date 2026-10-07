@@ -1,171 +1,415 @@
-package org.example.jobautomation.service.match;
+spring.application.name=JobAutomation
 
-import org.jsoup.Jsoup;
-import org.springframework.stereotype.Component;
+spring.datasource.url=jdbc:h2:mem:testdb
+spring.datasource.driver-class-name=org.h2.Driver
+spring.jpa.hibernate.ddl-auto=update
+spring.datasource.username=sa
+spring.h2.console.enabled=true
 
-@Component
-public class JobTextNormalizer {
+spring.ai.openai.api-key=${OPENAI_KEY}
 
-    public String normalize(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value.toLowerCase().trim().replaceAll("\\s+", " ");
+jobs.greenhouse.boards=hubspot,datadog,airbnb,doordash,stripe,canva,notion,figma,mongodb,snowflake,confluent,elastic,reddit,dropbox,coinbase,affirm,samsara,grafana
+jobs.lever.companies=spotify,palantir,ramp,brex,rippling,scale-ai,postman,coursera,udemy,motive,wealthfront,benchling
+
+
+
+Async config 
+
+package org.example.jobautomation.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+@Configuration
+public class AsyncConfig {
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService jobDiscoveryExecutor() {
+        return Executors.newFixedThreadPool(8);
     }
-
-    /**
-     * Converts raw or entity-escaped HTML into clean plain text, preserving case.
-     * Used for the AI prompt.
-     */
-    public String toPlainText(String value) {
-        if (value == null || value.isBlank()) {
-            return "";
-        }
-        // Pass 1 decodes entities (&lt;h2&gt; -> <h2>); pass 2 strips the real tags.
-        String decoded = Jsoup.parse(value).text();
-        return Jsoup.parse(decoded).text().replaceAll("\\s+", " ").trim();
+    // Dedicated pool for AI scoring: small on purpose to respect OpenAI rate limits
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService jobScoringExecutor() {
+        return Executors.newFixedThreadPool(5);
     }
-
-    /** Lower-cased plain text. Used by the keyword scorer (signature unchanged). */
-    public String normalizeAndStripHtml(String value) {
-        return normalize(toPlainText(value));
+    
+    // Dedicated pool for per-board HTTP fetches (Greenhouse/Lever). Sized to cover all boards in one wave.
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService jobSourceFetchExecutor() {
+        return Executors.newFixedThreadPool(16);
     }
 }
 
 
+ParallelBoardFetcher
 
-ai 
+package org.example.jobautomation.service.discovery;
 
-package org.example.jobautomation.service.match;
+import lombok.extern.slf4j.Slf4j;
+import org.example.jobautomation.dto.JobListingDto;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Component;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Function;
+
+@Slf4j
+@Component
+public class ParallelBoardFetcher {
+
+    private final ExecutorService executor;
+
+    public ParallelBoardFetcher(@Qualifier("jobSourceFetchExecutor") ExecutorService executor) {
+        this.executor = executor;
+    }
+
+    /**
+     * Fetches every key (board/company) in parallel with a per-key timeout,
+     * keeps partial results, then interleaves round-robin and applies the limit.
+     */
+    public List<JobListingDto> fetch(String label,
+                                     List<String> keys,
+                                     Function<String, List<JobListingDto>> fetchOne,
+                                     int limit,
+                                     long perKeyTimeoutSeconds) {
+
+        // Phase 1: start everything at once (returns immediately)
+        List<CompletableFuture<List<JobListingDto>>> futures = keys.stream()
+                .map(key -> CompletableFuture
+                        .supplyAsync(() -> fetchOne.apply(key), executor)
+                        .orTimeout(perKeyTimeoutSeconds, TimeUnit.SECONDS)
+                        .exceptionally(ex -> {
+                            // only THIS key is lost; the others keep their results
+                            log.warn("{} '{}' failed or timed out: {}", label, key, ex.toString());
+                            return List.<JobListingDto>of();
+                        }))
+                .toList();
+
+        // Phase 2: collect (each future is already bounded by its own timeout)
+        List<List<JobListingDto>> perKey = futures.stream()
+                .map(CompletableFuture::join)
+                .toList();
+
+        // Phase 3: merge fairly, then apply the limit
+        List<JobListingDto> merged = interleave(perKey, limit);
+        log.info("{} discovery complete. sources={}, returnedJobs={}", label, keys.size(), merged.size());
+        return merged;
+    }
+
+    /** Takes job #1 from each board, then job #2 from each board, ... until limit. */
+    private List<JobListingDto> interleave(List<List<JobListingDto>> lists, int limit) {
+        List<JobListingDto> out = new ArrayList<>();
+        int maxSize = lists.stream().mapToInt(List::size).max().orElse(0);
+        for (int i = 0; i < maxSize && out.size() < limit; i++) {
+            for (List<JobListingDto> list : lists) {
+                if (i < list.size()) {
+                    out.add(list.get(i));
+                    if (out.size() >= limit) {
+                        break;
+                    }
+                }
+            }
+        }
+        return out;
+    }
+}
+
+
+Greenhouse
+
+package org.example.jobautomation.service.discovery;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.example.jobautomation.dto.AiScoreResultDto;
 import org.example.jobautomation.dto.JobListingDto;
-import org.example.jobautomation.entity.UserProfile;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.stereotype.Service;
+import org.example.jobautomation.dto.JobSearchRequest;
+import org.example.jobautomation.dto.JobSourceType;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
-@Service
+import java.time.Instant;
+import java.util.*;
+import java.util.stream.Collectors;
+
+@Component
 @RequiredArgsConstructor
 @Slf4j
-public class AiJobScoringService {
+public class GreenhouseJobSourceClient implements JobSourceClient {
 
-    private static final int MAX_DESCRIPTION_CHARS = 3000;
+    private final RestTemplate restTemplate;
+    private final ParallelBoardFetcher boardFetcher;
+    private static final long BOARD_TIMEOUT_SECONDS = 10;
 
-    private final ChatClient.Builder chatClientBuilder;
-    private final ObjectMapper objectMapper;
-    private final JobTextNormalizer jobTextNormalizer;
+    @Value("#{'${jobs.greenhouse.boards:}'.split(',')}")
+    private List<String> boardTokens;
 
-    public AiScoreResultDto score(UserProfile profile, JobListingDto job) {
-        String prompt = buildPrompt(profile, job);
+    @Override
+    public JobSourceType sourceType() {
+        return JobSourceType.GREENHOUSE;
+    }
+
+    @Override
+    public List<JobListingDto> searchJobs(JobSearchRequest request) {
+        List<String> boards = sanitizeTokens(boardTokens);
+        int limit = resolveLimit(request);
+
+        if (boards.isEmpty()) {
+            log.info("Greenhouse discovery skipped. No board tokens configured.");
+            return new ArrayList<>();
+        }
+
+        return boardFetcher.fetch("Greenhouse", boards,
+                board -> fetchBoardJobs(board, request, limit),
+                limit, BOARD_TIMEOUT_SECONDS);
+    }
+
+    private List<JobListingDto> fetchBoardJobs(String board, JobSearchRequest request, int remainingSlots) {
+        String url = UriComponentsBuilder
+                .fromUriString("https://boards-api.greenhouse.io/v1/boards/{board}/jobs")
+                .queryParam("content", "true")
+                .buildAndExpand(board)
+                .toUriString();
 
         try {
-            ChatClient chatClient = chatClientBuilder.build();
-            String response = chatClient.prompt()
-                    .user(prompt)
-                    .call()
-                    .content();
-
-            if (response == null || response.isBlank()) {
-                return fallback("Empty AI response");
+            ResponseEntity<Map> response = restTemplate.getForEntity(url, Map.class);
+            Object jobsObject = response.getBody() == null ? null : response.getBody().get("jobs");
+            if (!(jobsObject instanceof List<?> jobs)) {
+                return Collections.emptyList();
             }
 
-            response = response
-                    .replaceAll("```json", "")
-                    .replaceAll("```", "")
-                    .trim();
+            List<JobListingDto> mapped = new ArrayList<>();
+            for (Object item : jobs) {
+                if (!(item instanceof Map<?, ?> rawJob)) {
+                    continue;
+                }
 
-            AiScoreResultDto dto = objectMapper.readValue(response, AiScoreResultDto.class);
+                JobListingDto job = toJobListing(rawJob, board);
+                if (job != null && matchesFilters(job, request)) {
+                    mapped.add(job);
+                }
 
-            if (dto.getScore() == null) {
-                dto.setScore(0);
+                if (mapped.size() >= remainingSlots) {
+                    break;
+                }
             }
 
-            dto.setScore(Math.max(0, Math.min(100, dto.getScore())));
-
-            if (dto.getMatchLevel() == null || dto.getMatchLevel().isBlank()) {
-                dto.setMatchLevel("UNKNOWN");
-            }
-
-            return dto;
-        } catch (Exception ex) {
-            log.warn("AI job scoring failed for job '{}' : {}", job.getTitle(), ex.toString());
-            return fallback("AI scoring unavailable");
+            return mapped;
+        } catch (RestClientException ex) {
+            log.warn("Greenhouse fetch failed for board {}: {}", board, ex.getMessage());
+            return Collections.emptyList();
         }
     }
 
-    private AiScoreResultDto fallback(String summary) {
-        AiScoreResultDto dto = new AiScoreResultDto();
-        dto.setScore(0);
-        dto.setMatchLevel("UNKNOWN");
-        dto.setSummary(summary);
-        return dto;
-    }
+    private JobListingDto toJobListing(Map<?, ?> rawJob, String board) {
+        String id = valueAsString(rawJob.get("id"));
+        String title = valueAsString(rawJob.get("title"));
+        String jobUrl = valueAsString(rawJob.get("absolute_url"));
+        String description = valueAsString(rawJob.get("content"));
+        String postedRaw = valueAsString(rawJob.get("updated_at"));
 
-    private String buildPrompt(UserProfile profile, JobListingDto job) {
-        return """
-                You are evaluating whether a candidate is a good fit for a job.
+        String location = "";
+        Object locationObject = rawJob.get("location");
+        if (locationObject instanceof Map<?, ?> locationMap) {
+            location = valueAsString(locationMap.get("name"));
+        }
 
-                Return ONLY valid JSON. Do not include markdown or extra text.
+        Instant postedAt = parseInstant(postedRaw);
 
-                Use exactly this schema:
-                {
-                  "score": <integer 0-100>,
-                  "matchLevel": "HIGH|MEDIUM|LOW|REJECT",
-                  "summary": "short 1-2 line summary",
-                  "reasons": ["reason 1", "reason 2"],
-                  "concerns": ["concern 1", "concern 2"]
-                }
-
-                Rules:
-                - Score must be an integer from 0 to 100.
-                - Be strict about clear mismatches.
-                - Consider role alignment, skills overlap, experience fit, and location compatibility.
-                - Do not invent facts.
-                - Keep reasons and concerns concise.
-
-                CANDIDATE PROFILE
-                Full Name: %s
-                Target Roles: %s
-                Skills: %s
-                Past Roles: %s
-                Total Experience Years: %s
-                Preferred Location: %s
-                Education: %s
-                Profile Summary: %s
-
-                JOB DETAILS
-                Title: %s
-                Company: %s
-                Location: %s
-                Description:
-                %s
-                """.formatted(
-                safe(profile.getFullName()),
-                safe(profile.getTargetRoles()),
-                safe(profile.getSkills()),
-                safe(profile.getPastRoles()),
-                safe(profile.getTotalExperienceYears()),
-                safe(profile.getPreferredLocation()),
-                safe(profile.getEducation()),
-                safe(profile.getProfileSummary()),
-                safe(job.getTitle()),
-                safe(job.getCompany()),
-                safe(job.getLocation()),
-                truncate(jobTextNormalizer.toPlainText(job.getDescription()), MAX_DESCRIPTION_CHARS)
+        return new JobListingDto(
+                JobSourceType.GREENHOUSE,
+                id,
+                title,
+                board,
+                location,
+                jobUrl,
+                description,
+                postedAt
         );
     }
 
-    private String truncate(String value, int maxLength) {
-        if (value == null) {
-            return "";
+    private boolean matchesFilters(JobListingDto job, JobSearchRequest request) {
+        if (request == null) {
+            return true;
         }
-        return value.length() <= maxLength ? value : value.substring(0, maxLength);
+
+        if (StringUtils.hasText(request.getLocation())) {
+            String wantedLocation = request.getLocation().toLowerCase();
+            String actualLocation = valueAsString(job.getLocation()).toLowerCase();
+            if (!actualLocation.contains(wantedLocation)) {
+                return false;
+            }
+        }
+
+        List<String> keywords = request.getKeywords() == null ? Collections.emptyList() : request.getKeywords();
+        List<String> normalizedKeywords = keywords.stream()
+                .filter(StringUtils::hasText)
+                .map(String::toLowerCase)
+                .collect(Collectors.toList());
+
+        if (normalizedKeywords.isEmpty()) {
+            return true;
+        }
+
+        String haystack = (valueAsString(job.getTitle()) + " " + valueAsString(job.getDescription())).toLowerCase();
+        return normalizedKeywords.stream().anyMatch(haystack::contains);
     }
 
-    private String safe(Object value) {
+    private int resolveLimit(JobSearchRequest request) {
+        if (request == null || request.getLimitPerSource() == null || request.getLimitPerSource() <= 0) {
+            return 25;
+        }
+        return request.getLimitPerSource();
+    }
+
+    private List<String> sanitizeTokens(List<String> tokens) {
+        if (tokens == null) {
+            return Collections.emptyList();
+        }
+        return tokens.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toList());
+    }
+
+    private String valueAsString(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private Instant parseInstant(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            return Instant.parse(value);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+}
+
+job discovery
+
+package org.example.jobautomation.service.discovery;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.example.jobautomation.dto.JobDiscoveryResponse;
+import org.example.jobautomation.dto.JobListingDto;
+import org.example.jobautomation.dto.JobSearchRequest;
+import org.example.jobautomation.dto.JobSourceType;
+import org.springframework.stereotype.Service;
+
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class JobDiscoveryService {
+
+    private final ExecutorService jobDiscoveryExecutor;
+    private record SourceResult(JobSourceType jobSourceType, List<JobListingDto> jobs) {}
+    private final List<JobSourceClient> sourceClients;
+
+    public JobDiscoveryResponse discoverJobs(JobSearchRequest request) {
+        List<JobListingDto> allJobs = new ArrayList<>();
+        Map<JobSourceType, Integer> sourceCounts = new EnumMap<>(JobSourceType.class);
+
+//        for (JobSourceClient client : sourceClients) {
+//            List<JobListingDto> jobsFromSource;
+//            try {
+//                jobsFromSource = client.searchJobs(request);
+//            } catch (Exception ex) {
+//                jobsFromSource = Collections.emptyList(); // fail-open for one source
+//            }
+//            allJobs.addAll(jobsFromSource);
+//            sourceCounts.put(client.sourceType(), jobsFromSource.size());
+//        }
+
+        // Phase 1: start every source in parallel (doesn't wait)
+        List<CompletableFuture<SourceResult>> futures =sourceClients.stream()
+                .map(client -> CompletableFuture.supplyAsync(
+                        ()-> new SourceResult(client.sourceType(),client.searchJobs(request)),jobDiscoveryExecutor)
+                        .orTimeout(25, TimeUnit.SECONDS)
+                        .exceptionally(ex->{
+                            log.warn("Job source {} failed: {}", client.sourceType(), ex.toString());
+                            return new SourceResult(client.sourceType(), List.of());
+                        }))
+                .toList();
+
+
+        // Phase 2: wait for results and collect
+        for (CompletableFuture<SourceResult> future : futures) {
+            SourceResult result = future.join();  //join waits until task is completed
+            allJobs.addAll(result.jobs());
+            sourceCounts.put(result.jobSourceType(), result.jobs().size());
+        }
+
+        List<JobListingDto> deduped = deduplicate(allJobs);
+
+        return new JobDiscoveryResponse(
+                deduped.size(),
+                deduped,
+                sourceCounts
+        );
+    }
+
+    private List<JobListingDto> deduplicate(List<JobListingDto> jobs) {
+        Map<String, JobListingDto> unique = new LinkedHashMap<>();
+        for (JobListingDto job : jobs) {
+            String key = job.getSource() + "::" + safe(job.getExternalJobId()) + "::" + safe(job.getJobUrl());
+            unique.putIfAbsent(key, job);
+        }
+        return unique.values().stream().collect(Collectors.toList());
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
+}
+
+JacksonConfig
+
+package org.example.jobautomation.config;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.boot.restclient.RestTemplateBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestTemplate;
+
+import java.time.Duration;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+@Configuration
+public class JacksonConfig {
+
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
+
+    @Bean
+    public RestTemplate restTemplate(RestTemplateBuilder builder) {
+        return builder
+                .connectTimeout(Duration.ofSeconds(3))
+                .readTimeout(Duration.ofSeconds(8))
+                .build();
     }
 }
