@@ -1,19 +1,188 @@
-spring.mail.host=smtp.gmail.com
-spring.mail.port=587
-spring.mail.username=${MAIL_USER}
-spring.mail.password=${MAIL_APP_PASSWORD}
-spring.mail.properties.mail.smtp.auth=true
-spring.mail.properties.mail.smtp.starttls.enable=true
+public int notifyHighMatches(Long userId, JobMatchRequest request) {
+    long start = System.currentTimeMillis();
+    log.info("notifyHighMatches started for userId={}", userId);
 
-spring.ai.openai.chat.options.temperature=0.2
+    long t0 = System.currentTimeMillis();
+    UserProfile user = userProfileService.getProfile(userId);
+    log.info("Loaded user profile in {} ms for userId={}", System.currentTimeMillis() - t0, userId);
 
-app.base-url=http://localhost:8080
-app.mail-from=${MAIL_USER}
-app.confirmation-days=7
+    if (!StringUtils.hasText(user.getEmail())) {
+        throw new IllegalStateException("User " + userId + " has no email");
+    }
+
+    t0 = System.currentTimeMillis();
+    JobMatchResponseDto result = jobMatchService.matchJobs(userId, request);
+    log.info("jobMatchService.matchJobs completed in {} ms for userId={} totalMatches={}",
+            System.currentTimeMillis() - t0, userId, result.getMatches().size());
+
+    t0 = System.currentTimeMillis();
+    List<HighMatchDto> toSend = new ArrayList<>();
+
+    for (JobMatchResultDto m : result.getMatches()) {
+        if (!"HIGH".equals(m.getMatchLevel())) continue;
+
+        JobListingDto job = m.getJob();
+        if (confirmationRepo.existsByUserIdAndSourceAndExternalJobId(
+                userId, job.getSource(), job.getExternalJobId())) {
+            continue;
+        }
+
+        ResumeConfirmation c = new ResumeConfirmation();
+        c.setToken(UUID.randomUUID().toString());
+        c.setUserId(userId);
+        c.setSource(job.getSource());
+        c.setExternalJobId(job.getExternalJobId());
+        c.setJobTitle(job.getTitle());
+        c.setCompany(job.getCompany());
+        c.setJobSnapshotJson(toJson(job));
+        c.setExpiresAt(Instant.now().plus(confirmationDays, ChronoUnit.DAYS));
+        confirmationRepo.save(c);
+
+        toSend.add(new HighMatchDto(c.getToken(), job.getTitle(), job.getCompany(),
+                job.getLocation(), job.getJobUrl(),
+                m.getMatchScore(), m.getKeywordScore(), m.getAiScore(), m.getAiSummary()));
+    }
+    log.info("HIGH filtering + confirmation save took {} ms for userId={}, highCount={}",
+            System.currentTimeMillis() - t0, userId, toSend.size());
+
+    if (!toSend.isEmpty()) {
+        t0 = System.currentTimeMillis();
+        emailService.sendHighMatches(user, toSend);
+        log.info("Email send completed in {} ms for userId={}, emails={}",
+                System.currentTimeMillis() - t0, userId, toSend.size());
+    } else {
+        log.info("No HIGH matches to email for userId={}", userId);
+    }
+
+    log.info("notifyHighMatches total time {} ms for userId={}", System.currentTimeMillis() - start, userId);
+    return toSend.size();
+}
 
 
-POST /api/jobs/match/1/notify
-{
-  "jobSearchRequest": { "keywords": ["java","spring"], "limitPerSource": 25 },
-  "minimumScore": 50
+
+public JobMatchResponseDto matchJobs(Long userId, JobMatchRequest request) {
+    long start = System.currentTimeMillis();
+    log.info("matchJobs started for userId={}", userId);
+
+    long t0 = System.currentTimeMillis();
+    UserProfile profile = userProfileService.getProfile(userId);
+    log.info("Loaded profile in {} ms for userId={}", System.currentTimeMillis() - t0, userId);
+
+    t0 = System.currentTimeMillis();
+    JobDiscoveryResponse discoveryResponse =
+            jobDiscoveryService.discoverJobs(request.getJobSearchRequest());
+    log.info("Job discovery completed in {} ms for userId={}, totalJobs={}",
+            System.currentTimeMillis() - t0, userId, discoveryResponse.getTotalJobs());
+
+    Integer minimumScore = request.getMinimumScore() != null ? request.getMinimumScore() : 30;
+
+    t0 = System.currentTimeMillis();
+    List<Scored> ranked = discoveryResponse.getJobs().stream()
+            .map(job -> new Scored(job, combinedJobScoringService.keywordScore(profile, job)))
+            .sorted(Comparator.comparing((Scored s) -> s.keyword().getTotalScore()).reversed())
+            .toList();
+    log.info("Keyword scoring completed in {} ms for {} jobs", System.currentTimeMillis() - t0, ranked.size());
+
+    var blend = scoringConfig.getBlend();
+    List<CompletableFuture<JobMatchResultDto>> futures = new ArrayList<>();
+
+    t0 = System.currentTimeMillis();
+    for (int i = 0; i < ranked.size(); i++) {
+        Scored s = ranked.get(i);
+        boolean useAi = Boolean.TRUE.equals(blend.getAiEnabled())
+                && i < blend.getAiMaxCandidates()
+                && s.keyword().getTotalScore() >= blend.getAiMinKeywordScore();
+
+        if (useAi) {
+            futures.add(CompletableFuture
+                    .supplyAsync(() -> combinedJobScoringService.scoreWithAi(profile, s.job(), s.keyword()),
+                            jobScoringExecutor)
+                    .exceptionally(ex -> {
+                        log.warn("AI scoring failed for job {}: {}", s.job().getExternalJobId(), ex.toString());
+                        return combinedJobScoringService.buildKeywordOnly(s.job(), s.keyword());
+                    }));
+        } else {
+            futures.add(CompletableFuture.completedFuture(
+                    combinedJobScoringService.buildKeywordOnly(s.job(), s.keyword())));
+        }
+    }
+    log.info("Scoring futures created in {} ms", System.currentTimeMillis() - t0);
+
+    t0 = System.currentTimeMillis();
+    List<JobMatchResultDto> results = futures.stream()
+            .map(CompletableFuture::join)
+            .filter(Objects::nonNull)
+            .filter(result -> Boolean.TRUE.equals(request.getIncludeRejected())
+                    || result.getMatchScore() >= minimumScore)
+            .sorted(Comparator.comparing(JobMatchResultDto::getMatchScore).reversed())
+            .collect(Collectors.toList());
+    log.info("Waiting + filtering + sorting took {} ms, finalResults={}",
+            System.currentTimeMillis() - t0, results.size());
+
+    if (request.getLimit() != null && request.getLimit() > 0 && request.getLimit() < results.size()) {
+        results = new ArrayList<>(results.subList(0, request.getLimit()));
+    }
+
+    log.info("matchJobs total time {} ms for userId={}", System.currentTimeMillis() - start, userId);
+
+    return new JobMatchResponseDto(
+            userId,
+            discoveryResponse.getTotalJobs(),
+            results.size(),
+            results
+    );
+}
+
+
+@PostMapping("/{userId}/notify")
+public ResponseEntity<Map<String, String>> notifyHigh(@PathVariable Long userId,
+                                                      @RequestBody JobMatchRequest request) {
+    long start = System.currentTimeMillis();
+    log.info("notifyHigh request accepted for userId={}", userId);
+
+    jobScoringExecutor.submit(() -> {
+        long taskStart = System.currentTimeMillis();
+        try {
+            notificationService.notifyHighMatches(userId, request);
+            log.info("notifyHigh async task finished in {} ms for userId={}",
+                    System.currentTimeMillis() - taskStart, userId);
+        } catch (Exception e) {
+            log.error("notifyHigh async task failed for userId={}", userId, e);
+        }
+    });
+
+    log.info("notifyHigh endpoint returned in {} ms for userId={}",
+            System.currentTimeMillis() - start, userId);
+
+    return ResponseEntity.accepted()
+            .body(Map.of("status", "Processing. HIGH matches will be emailed to the registered address."));
+}
+
+
+public void sendHighMatches(UserProfile user, List<HighMatchDto> jobs) {
+    long start = System.currentTimeMillis();
+
+    StringBuilder sb = new StringBuilder();
+    sb.append("<h3>Hi ").append(esc(user.getFullName())).append(",</h3>")
+            .append("<p>These jobs are a high match. Click to confirm and we'll build a tailored resume.</p>");
+
+    for (HighMatchDto j : jobs) {
+        sb.append("<div style='border:1px solid #ddd;padding:12px;margin:12px 0'>")
+                .append("<b>").append(esc(j.title())).append("</b> – ").append(esc(j.company()))
+                .append("<br>📍 ").append(esc(j.location()))
+                .append("<br>Match <b>").append(j.matchScore()).append("</b> (keyword ")
+                .append(j.keywordScore()).append(", AI ").append(j.aiScore()).append(")")
+                .append("<p>").append(esc(j.aiSummary())).append("</p>")
+                .append("<a href='").append(baseUrl).append("/api/resumes/confirm/").append(j.token())
+                .append("'>✅ Build tailored resume</a> &nbsp; <a href='").append(esc(j.jobUrl()))
+                .append("'>View job</a></div>");
+    }
+
+    long buildTime = System.currentTimeMillis() - start;
+    log.info("Built HIGH email HTML in {} ms for user={}, jobs={}", buildTime, user.getEmail(), jobs.size());
+
+    long sendStart = System.currentTimeMillis();
+    send(user.getEmail(), "🎯 " + jobs.size() + " high-match jobs – confirm resume build",
+            sb.toString(), null, null);
+    log.info("SMTP send completed in {} ms for user={}", System.currentTimeMillis() - sendStart, user.getEmail());
 }
