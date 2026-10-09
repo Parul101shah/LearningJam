@@ -1,553 +1,110 @@
-<dependency>
-    <groupId>com.microsoft.playwright</groupId>
-    <artifactId>playwright</artifactId>
-    <version>1.49.0</version>
-</dependency>
-
-
-application.yml
-
-app:
-  apply:
-    dry-run: true      # fill the form and screenshot, but don't click Submit
-    headless: true     # run browser in a background
-    screenshot-dir: ./apply-screenshots     #folder where sc will be saved
-    phone: ""          # temporary until UserProfile has a phone field
-
-
-AsyncConfig:
-
-@Bean(destroyMethod = "shutdown")
-public ExecutorService applyExecutor() {
-    return Executors.newFixedThreadPool(2); // browsers are heavy (only 2 threads
-}
-
-
-ResumeConfirmation.Status
-
-public enum Status { PENDING, CONFIRMED, COMPLETED, FAILED, APPLYING, APPLIED, NEEDS_MANUAL }
-
- MatchEmailService: add this line after the Confirm line (about line 36)
-
-.append("\n  Apply: ").append(baseUrl).append("/api/applications/apply/").append(j.token())
-
-
-public void sendApplyResult(UserProfile user, String title, String company, String status, String detail, String jobUrl) {
-    String body = "Hi " + nz(user.getFullName()) + ",\n\nApplication for " + nz(title) + " at " + nz(company)
-            + ": " + status + "\n" + nz(detail) + "\n\nJob link: " + nz(jobUrl);
-    send(user.getEmail(), "Application " + status + " – " + title, body, null, null);
-}
+private String phone;
+private String linkedinUrl;
+private String currentLocation;
+private Boolean workAuthorized;        // legally authorized to work in target country
+private Boolean requiresSponsorship;
+private Integer noticePeriodDays;
+private Integer expectedSalary;
 
 
 
-ApplicationController
+profile.setPhone(request.getPhone());
+profile.setLinkedinUrl(request.getLinkedinUrl());
+profile.setWorkAuthorized(request.getWorkAuthorized());
+profile.setRequiresSponsorship(request.getRequiresSponsorship());
+profile.setNoticePeriodDays(request.getNoticePeriodDays());
+profile.setExpectedSalary(request.getExpectedSalary());
 
-package org.example.jobautomation.controller;
+
+package org.example.jobautomation.service.apply;
 
 import lombok.RequiredArgsConstructor;
-import org.example.jobautomation.service.apply.ApplyService;
-import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.util.HtmlUtils;
-
-@RestController
-@RequestMapping("/api/applications")
-@RequiredArgsConstructor
-public class ApplicationController {
-
-    private final ApplyService applyService;
-
-    @GetMapping(value = "/apply/{token}", produces = MediaType.TEXT_HTML_VALUE)
-    public String page(@PathVariable String token) {
-        return """
-               <html><body style='font-family:sans-serif;text-align:center;margin-top:60px'>
-               <h3>Apply to this job automatically?</h3>
-               <form method='post' action='/api/applications/apply/%s'>
-                 <button type='submit' style='padding:10px 24px;font-size:16px'>Yes, apply</button>
-               </form></body></html>
-               """.formatted(HtmlUtils.htmlEscape(token));
-    }
-
-    @PostMapping(value = "/apply/{token}", produces = MediaType.TEXT_HTML_VALUE)
-    public String apply(@PathVariable String token) {
-        String msg = applyService.requestApply(token);
-        return "<html><body style='font-family:sans-serif;text-align:center;margin-top:60px'><p>"
-                + HtmlUtils.htmlEscape(msg) + "</p></body></html>";
-    }
-}
-
-
-service/apply/ApplyResult.java and ApplyContext.java
-
-
-package org.example.jobautomation.service.apply;
-
-
-public record ApplyResult(Outcome outcome, String detail) {
-    public enum Outcome { SUBMITTED, DRY_RUN_OK, NEEDS_MANUAL, FAILED }
-    public static ApplyResult of(Outcome o, String d) { return new ApplyResult(o, d); }
-}
-//The Outcome enum is nested inside ApplyResult because it is conceptually owned by ApplyResult and is not intended to be reused elsewhere.
-
-
-
-package org.example.jobautomation.service.apply;
-
 import org.example.jobautomation.dto.JobListingDto;
 import org.example.jobautomation.entity.UserProfile;
-
-public record ApplyContext(UserProfile user, JobListingDto job, byte[] resumePdf, boolean dryRun) {
-    public String firstName() {
-        String n = user.getFullName() == null ? "" : user.getFullName().trim();
-        int i = n.indexOf(' ');
-        return i < 0 ? n : n.substring(0, i);
-    }
-    public String lastName() {
-        String n = user.getFullName() == null ? "" : user.getFullName().trim();
-        int i = n.lastIndexOf(' ');
-        return i < 0 ? "" : n.substring(i + 1);
-    }
-}
-
- strategy/ApplyStrategy.java
-
-package org.example.jobautomation.service.apply.strategy;
-
-import com.microsoft.playwright.Page;
-import org.example.jobautomation.dto.JobSourceType;
-import org.example.jobautomation.service.apply.*;
-
-public interface ApplyStrategy {
-    JobSourceType supports();
-    ApplyResult apply(Page page, ApplyContext ctx);
-}
-
-
-strategy/GreenhouseApplyStrategy.java
-
-package org.example.jobautomation.service.apply.strategy;
-
-import com.microsoft.playwright.Page;
-import com.microsoft.playwright.options.FilePayload;
-import org.example.jobautomation.dto.JobSourceType;
-import org.example.jobautomation.service.apply.*;
-import org.example.jobautomation.service.apply.ApplyResult.Outcome;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Component;
 
-@Component
-public class GreenhouseApplyStrategy implements ApplyStrategy {
-
-    @Value("${app.apply.phone:}") private String phone;
-
-    @Override public JobSourceType supports() { return JobSourceType.GREENHOUSE; }
-
-    @Override
-    public ApplyResult apply(Page page, ApplyContext ctx) {
-        page.navigate(ctx.job().getJobUrl());
-        page.waitForLoadState();
-
-        if (page.locator("#first_name").count() == 0) {
-            return ApplyResult.of(Outcome.NEEDS_MANUAL, "Application form not found (embedded or changed layout).");
-        }
-        if (page.locator("iframe[src*='recaptcha'], .g-recaptcha, iframe[src*='hcaptcha']").count() > 0) {
-            return ApplyResult.of(Outcome.NEEDS_MANUAL, "CAPTCHA present.");
-        }
-
-        page.fill("#first_name", ctx.firstName());
-        page.fill("#last_name", ctx.lastName());
-        page.fill("#email", ctx.user().getEmail());
-        if (!phone.isBlank() && page.locator("#phone").count() > 0) page.fill("#phone", phone);
-
-        page.locator("input[type=file]").first().setInputFiles(
-                new FilePayload("resume.pdf", "application/pdf", ctx.resumePdf()));
-
-        // Any other required, empty field means custom questions we can't answer yet
-        int unanswered = (Integer) page.evaluate("""
-            () => [...document.querySelectorAll('#application_form [required], #application-form [required], form [aria-required=true]')]
-                  .filter(e => e.type !== 'file' && e.type !== 'hidden' && !e.value && !e.checked).length
-            """);
-        if (unanswered > 0) {
-            return ApplyResult.of(Outcome.NEEDS_MANUAL, unanswered + " required custom question(s) unanswered.");
-        }
-
-        if (ctx.dryRun()) return ApplyResult.of(Outcome.DRY_RUN_OK, "Form filled; dry-run, not submitted.");
-
-        page.locator("button[type=submit], input[type=submit]").first().click();
-        page.waitForLoadState();
-        String body = page.textContent("body").toLowerCase();
-        boolean ok = page.url().contains("confirmation") || body.contains("thank you for applying")
-                || body.contains("application has been received");
-        return ok ? ApplyResult.of(Outcome.SUBMITTED, "Submitted.")
-                  : ApplyResult.of(Outcome.NEEDS_MANUAL, "Submit clicked but confirmation not detected.");
-    }
-}
-
- strategy/LeverApplyStrategy.java
-
-package org.example.jobautomation.service.apply.strategy;
-
-import com.microsoft.playwright.Page;
-import com.microsoft.playwright.options.FilePayload;
-import org.example.jobautomation.dto.JobSourceType;
-import org.example.jobautomation.service.apply.*;
-import org.example.jobautomation.service.apply.ApplyResult.Outcome;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
+import java.util.List;
+import java.util.Optional;
 
 @Component
-public class LeverApplyStrategy implements ApplyStrategy {
+@RequiredArgsConstructor
+public class AnswerResolver {
 
-    @Value("${app.apply.phone:}") private String phone;
+    private final ChatClient.Builder chatClientBuilder;
 
-    @Override public JobSourceType supports() { return JobSourceType.LEVER; }
+    /** Sensitive topics: never auto-answer beyond "decline". */
+    private static final List<String> EEO = List.of("gender", "race", "ethnic", "veteran",
+            "disability", "sexual orientation", "pronoun", "hispanic");
 
-    @Override
-    public ApplyResult apply(Page page, ApplyContext ctx) {
-        String url = ctx.job().getJobUrl();
-        if (!url.endsWith("/apply")) url = url.replaceAll("/+$", "") + "/apply";
-        page.navigate(url);
-        page.waitForLoadState();
+    public enum Kind { TEXT, YES_NO, SELECT, TEXTAREA }
 
-        if (page.locator("input[name=name]").count() == 0) {
-            return ApplyResult.of(Outcome.NEEDS_MANUAL, "Application form not found.");
-        }
-        if (page.locator("iframe[src*='hcaptcha'], .h-captcha, iframe[src*='recaptcha']").count() > 0) {
-            return ApplyResult.of(Outcome.NEEDS_MANUAL, "CAPTCHA present.");
-        }
+    /** @param options visible option labels for SELECT/radio, else empty */
+    public Optional<String> resolve(String label, Kind kind, List<String> options,
+                                    UserProfile u, JobListingDto job) {
+        String l = label == null ? "" : label.toLowerCase().trim();
 
-        page.fill("input[name=name]", ctx.user().getFullName());
-        page.fill("input[name=email]", ctx.user().getEmail());
-        if (!phone.isBlank() && page.locator("input[name=phone]").count() > 0) page.fill("input[name=phone]", phone);
-
-        page.locator("input[name=resume]").setInputFiles(
-                new FilePayload("resume.pdf", "application/pdf", ctx.resumePdf()));
-
-        int unanswered = (Integer) page.evaluate("""
-            () => [...document.querySelectorAll('form [required]')]
-                  .filter(e => e.type !== 'file' && e.type !== 'hidden' && !e.value && !e.checked).length
-            """);
-        if (unanswered > 0) {
-            return ApplyResult.of(Outcome.NEEDS_MANUAL, unanswered + " required custom question(s) unanswered.");
+        if (EEO.stream().anyMatch(l::contains)) {
+            return options.stream()
+                    .filter(o -> o.toLowerCase().matches(".*(decline|prefer not|do not wish|don't wish).*"))
+                    .findFirst();                        // empty -> manual
         }
 
-        if (ctx.dryRun()) return ApplyResult.of(Outcome.DRY_RUN_OK, "Form filled; dry-run, not submitted.");
+        // 1. Deterministic profile mapping
+        if (l.contains("linkedin"))                      return opt(u.getLinkedinUrl());
+        if (l.contains("phone") || l.contains("mobile")) return opt(u.getPhone());
+        if (l.contains("current location") || l.equals("city") || l.contains("where are you located"))
+            return opt(u.getCurrentLocation() != null ? u.getCurrentLocation() : u.getPreferredLocation());
+        if (l.contains("years of experience") && u.getTotalExperienceYears() != null)
+            return Optional.of(String.valueOf(u.getTotalExperienceYears()));
+        if (l.contains("notice") && u.getNoticePeriodDays() != null)
+            return Optional.of(String.valueOf(u.getNoticePeriodDays()));
+        if ((l.contains("salary") || l.contains("compensation")) && u.getExpectedSalary() != null)
+            return Optional.of(String.valueOf(u.getExpectedSalary()));
+        if (l.contains("sponsor"))
+            return yesNo(u.getRequiresSponsorship(), options);
+        if (l.contains("authorized") || l.contains("authorised") || l.contains("legally") || l.contains("right to work"))
+            return yesNo(u.getWorkAuthorized(), options);
+        if (l.contains("website") || l.contains("portfolio") || l.contains("github")) return Optional.empty();
 
-        page.locator("button[type=submit]").first().click();
-        page.waitForLoadState();
-        return page.url().contains("/thanks")
-                ? ApplyResult.of(Outcome.SUBMITTED, "Submitted.")
-                : ApplyResult.of(Outcome.NEEDS_MANUAL, "Confirmation not detected.");
-    }
-}
-
-
- PlaywrightManager.java
-
-package org.example.jobautomation.service.apply;
-
-import com.microsoft.playwright.*;
-import jakarta.annotation.PreDestroy;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
-
-@Component
-public class PlaywrightManager {
-    private final Playwright playwright = Playwright.create();
-    private final Browser browser;
-
-    public PlaywrightManager(@Value("${app.apply.headless:true}") boolean headless) {
-        this.browser = playwright.chromium().launch(new BrowserType.LaunchOptions().setHeadless(headless));
-    }
-
-    public BrowserContext newContext() { return browser.newContext(); }
-
-    @PreDestroy
-    void close() { browser.close(); playwright.close(); }
-}
-
- ApplyService.java
-
-package org.example.jobautomation.service.apply;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.microsoft.playwright.*;
-import lombok.extern.slf4j.Slf4j;
-import org.example.jobautomation.dto.JobListingDto;
-import org.example.jobautomation.dto.JobSourceType;
-import org.example.jobautomation.entity.*;
-import org.example.jobautomation.repository.*;
-import org.example.jobautomation.service.UserProfileService;
-import org.example.jobautomation.service.apply.ApplyResult.Outcome;
-import org.example.jobautomation.service.apply.strategy.ApplyStrategy;
-import org.example.jobautomation.service.notification.MatchEmailService;
-import org.example.jobautomation.service.resume.ResumeGenerationService;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
-
-import java.nio.file.*;
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.function.Function;
-import java.util.stream.Collectors;
-
-@Service
-@Slf4j
-public class ApplyService {
-
-    private final ResumeConfirmationRepository confirmationRepo;
-    private final GeneratedResumeRepository resumeRepo;
-    private final UserProfileService userProfileService;
-    private final MatchEmailService emailService;
-    private final ResumeGenerationService generationService;
-    private final PlaywrightManager playwrightManager;
-    private final ObjectMapper objectMapper;
-    private final ExecutorService applyExecutor;
-    private final Map<JobSourceType, ApplyStrategy> strategies;
-
-    @Value("${app.apply.dry-run:true}") private boolean dryRun;
-    @Value("${app.apply.screenshot-dir:./apply-screenshots}") private String screenshotDir;
-
-    public ApplyService(ResumeConfirmationRepository confirmationRepo, GeneratedResumeRepository resumeRepo,
-                        UserProfileService userProfileService, MatchEmailService emailService,
-                        ResumeGenerationService generationService, PlaywrightManager playwrightManager,
-                        ObjectMapper objectMapper, ExecutorService applyExecutor, List<ApplyStrategy> list) {
-        this.confirmationRepo = confirmationRepo;
-        this.resumeRepo = resumeRepo;
-        this.userProfileService = userProfileService;
-        this.emailService = emailService;
-        this.generationService = generationService;
-        this.playwrightManager = playwrightManager;
-        this.objectMapper = objectMapper;
-        this.applyExecutor = applyExecutor;
-        this.strategies = list.stream().collect(Collectors.toMap(ApplyStrategy::supports, Function.identity()));
-    }
-
-    public String requestApply(String token) {
-        ResumeConfirmation c = confirmationRepo.findByToken(token).orElse(null);
-        if (c == null) return "Invalid link.";
-        if (c.getExpiresAt().isBefore(Instant.now())) return "This link has expired.";
-        if (c.isApplyRequested()) return "An application was already requested (" + c.getStatus() + ").";
-        c.setApplyRequested(true);
-        confirmationRepo.save(c);
-        applyExecutor.submit(() -> run(c.getId()));
-        return "Thanks! We're applying to " + c.getJobTitle() + " at " + c.getCompany()
-                + ". You'll get an email with the result.";
-    }
-
-    void run(Long id) {
-        ResumeConfirmation c = confirmationRepo.findById(id).orElseThrow();
-        UserProfile user = userProfileService.getProfile(c.getUserId());
-        JobListingDto job = null;
-        try {
-            job = objectMapper.readValue(c.getJobSnapshotJson(), JobListingDto.class);
-
-            // Ensure a resume exists (generate synchronously if the user never confirmed it)
-            GeneratedResume g = resumeRepo
-                    .findByUserIdAndSourceAndExternalJobId(c.getUserId(), c.getSource(), c.getExternalJobId())
-                    .orElse(null);
-            if (g == null) {
-                if (c.getStatus() == ResumeConfirmation.Status.PENDING) {
-                    c.setStatus(ResumeConfirmation.Status.CONFIRMED);
-                    confirmationRepo.save(c);
-                }
-                generationService.generate(c.getId());
-                g = resumeRepo.findByUserIdAndSourceAndExternalJobId(
-                        c.getUserId(), c.getSource(), c.getExternalJobId()).orElseThrow();
-            }
-
-            c.setStatus(ResumeConfirmation.Status.APPLYING);
-            confirmationRepo.save(c);
-
-            ApplyStrategy strategy = strategies.get(c.getSource());
-            ApplyResult result;
-            if (strategy == null) {
-                result = ApplyResult.of(Outcome.NEEDS_MANUAL, "No automation for " + c.getSource());
-            } else {
-                result = execute(strategy, new ApplyContext(user, job, g.getPdf(), dryRun), id);
-            }
-
-            c.setStatus(switch (result.outcome()) {
-                case SUBMITTED, DRY_RUN_OK -> ResumeConfirmation.Status.APPLIED;
-                case NEEDS_MANUAL -> ResumeConfirmation.Status.NEEDS_MANUAL;
-                case FAILED -> ResumeConfirmation.Status.FAILED;
-            });
-            confirmationRepo.save(c);
-            emailService.sendApplyResult(user, c.getJobTitle(), c.getCompany(),
-                    result.outcome().name(), result.detail(), job.getJobUrl());
-        } catch (Exception e) {
-            log.error("Apply failed for confirmation {}", id, e);
-            c.setStatus(ResumeConfirmation.Status.FAILED);
-            confirmationRepo.save(c);
-            emailService.sendApplyResult(user, c.getJobTitle(), c.getCompany(), "FAILED",
-                    e.getMessage(), job == null ? "" : job.getJobUrl());
+        // 2. AI only for open-ended text about the candidate's background
+        if (kind == Kind.TEXTAREA || (kind == Kind.TEXT && l.contains("why"))) {
+            return Optional.ofNullable(aiAnswer(label, u, job));
         }
+        return Optional.empty();
     }
 
-    private ApplyResult execute(ApplyStrategy strategy, ApplyContext ctx, Long id) {
-        try (BrowserContext bc = playwrightManager.newContext()) {
-            Page page = bc.newPage();
-            page.setDefaultTimeout(15_000);
-            try {
-                ApplyResult r = strategy.apply(page, ctx);
-                screenshot(page, id, "result");
-                return r;
-            } catch (Exception e) {
-                screenshot(page, id, "error");
-                return ApplyResult.of(Outcome.FAILED, e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
-        }
+    private Optional<String> yesNo(Boolean v, List<String> options) {
+        if (v == null) return Optional.empty();
+        String want = v ? "yes" : "no";
+        if (options.isEmpty()) return Optional.of(want.substring(0, 1).toUpperCase() + want.substring(1));
+        return options.stream().filter(o -> o.toLowerCase().startsWith(want)).findFirst();
     }
 
-    private void screenshot(Page page, Long id, String tag) {
-        try {
-            Files.createDirectories(Path.of(screenshotDir));
-            page.screenshot(new Page.ScreenshotOptions()
-                    .setPath(Path.of(screenshotDir, id + "-" + tag + ".png")).setFullPage(true));
-        } catch (Exception ignored) { }
-    }
-}
+    private Optional<String> opt(String s) { return s == null || s.isBlank() ? Optional.empty() : Optional.of(s); }
 
- ApplyService.java
-
-package org.example.jobautomation.service.apply;
-
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.microsoft.playwright.*;
-import lombok.extern.slf4j.Slf4j;
-import org.example.jobautomation.dto.JobListingDto;
-import org.example.jobautomation.dto.JobSourceType;
-import org.example.jobautomation.entity.*;
-import org.example.jobautomation.repository.*;
-import org.example.jobautomation.service.UserProfileService;
-import org.example.jobautomation.service.apply.ApplyResult.Outcome;
-import org.example.jobautomation.service.apply.strategy.ApplyStrategy;
-import org.example.jobautomation.service.notification.MatchEmailService;
-import org.example.jobautomation.service.resume.ResumeGenerationService;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
-
-import java.nio.file.*;
-import java.time.Instant;
-import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.function.Function;
-import java.util.stream.Collectors;
-
-@Service
-@Slf4j
-public class ApplyService {
-
-    private final ResumeConfirmationRepository confirmationRepo;
-    private final GeneratedResumeRepository resumeRepo;
-    private final UserProfileService userProfileService;
-    private final MatchEmailService emailService;
-    private final ResumeGenerationService generationService;
-    private final PlaywrightManager playwrightManager;
-    private final ObjectMapper objectMapper;
-    private final ExecutorService applyExecutor;
-    private final Map<JobSourceType, ApplyStrategy> strategies;
-
-    @Value("${app.apply.dry-run:true}") private boolean dryRun;
-    @Value("${app.apply.screenshot-dir:./apply-screenshots}") private String screenshotDir;
-
-    public ApplyService(ResumeConfirmationRepository confirmationRepo, GeneratedResumeRepository resumeRepo,
-                        UserProfileService userProfileService, MatchEmailService emailService,
-                        ResumeGenerationService generationService, PlaywrightManager playwrightManager,
-                        ObjectMapper objectMapper, ExecutorService applyExecutor, List<ApplyStrategy> list) {
-        this.confirmationRepo = confirmationRepo;
-        this.resumeRepo = resumeRepo;
-        this.userProfileService = userProfileService;
-        this.emailService = emailService;
-        this.generationService = generationService;
-        this.playwrightManager = playwrightManager;
-        this.objectMapper = objectMapper;
-        this.applyExecutor = applyExecutor;
-        this.strategies = list.stream().collect(Collectors.toMap(ApplyStrategy::supports, Function.identity()));
-    }
-
-    public String requestApply(String token) {
-        ResumeConfirmation c = confirmationRepo.findByToken(token).orElse(null);
-        if (c == null) return "Invalid link.";
-        if (c.getExpiresAt().isBefore(Instant.now())) return "This link has expired.";
-        if (c.isApplyRequested()) return "An application was already requested (" + c.getStatus() + ").";
-        c.setApplyRequested(true);
-        confirmationRepo.save(c);
-        applyExecutor.submit(() -> run(c.getId()));
-        return "Thanks! We're applying to " + c.getJobTitle() + " at " + c.getCompany()
-                + ". You'll get an email with the result.";
-    }
-
-    void run(Long id) {
-        ResumeConfirmation c = confirmationRepo.findById(id).orElseThrow();
-        UserProfile user = userProfileService.getProfile(c.getUserId());
-        JobListingDto job = null;
-        try {
-            job = objectMapper.readValue(c.getJobSnapshotJson(), JobListingDto.class);
-
-            // Ensure a resume exists (generate synchronously if the user never confirmed it)
-            GeneratedResume g = resumeRepo
-                    .findByUserIdAndSourceAndExternalJobId(c.getUserId(), c.getSource(), c.getExternalJobId())
-                    .orElse(null);
-            if (g == null) {
-                if (c.getStatus() == ResumeConfirmation.Status.PENDING) {
-                    c.setStatus(ResumeConfirmation.Status.CONFIRMED);
-                    confirmationRepo.save(c);
-                }
-                generationService.generate(c.getId());
-                g = resumeRepo.findByUserIdAndSourceAndExternalJobId(
-                        c.getUserId(), c.getSource(), c.getExternalJobId()).orElseThrow();
-            }
-
-            c.setStatus(ResumeConfirmation.Status.APPLYING);
-            confirmationRepo.save(c);
-
-            ApplyStrategy strategy = strategies.get(c.getSource());
-            ApplyResult result;
-            if (strategy == null) {
-                result = ApplyResult.of(Outcome.NEEDS_MANUAL, "No automation for " + c.getSource());
-            } else {
-                result = execute(strategy, new ApplyContext(user, job, g.getPdf(), dryRun), id);
-            }
-
-            c.setStatus(switch (result.outcome()) {
-                case SUBMITTED, DRY_RUN_OK -> ResumeConfirmation.Status.APPLIED;
-                case NEEDS_MANUAL -> ResumeConfirmation.Status.NEEDS_MANUAL;
-                case FAILED -> ResumeConfirmation.Status.FAILED;
-            });
-            confirmationRepo.save(c);
-            emailService.sendApplyResult(user, c.getJobTitle(), c.getCompany(),
-                    result.outcome().name(), result.detail(), job.getJobUrl());
-        } catch (Exception e) {
-            log.error("Apply failed for confirmation {}", id, e);
-            c.setStatus(ResumeConfirmation.Status.FAILED);
-            confirmationRepo.save(c);
-            emailService.sendApplyResult(user, c.getJobTitle(), c.getCompany(), "FAILED",
-                    e.getMessage(), job == null ? "" : job.getJobUrl());
-        }
-    }
-
-    private ApplyResult execute(ApplyStrategy strategy, ApplyContext ctx, Long id) {
-        try (BrowserContext bc = playwrightManager.newContext()) {
-            Page page = bc.newPage();
-            page.setDefaultTimeout(15_000);
-            try {
-                ApplyResult r = strategy.apply(page, ctx);
-                screenshot(page, id, "result");
-                return r;
-            } catch (Exception e) {
-                screenshot(page, id, "error");
-                return ApplyResult.of(Outcome.FAILED, e.getClass().getSimpleName() + ": " + e.getMessage());
-            }
-        }
-    }
-
-    private void screenshot(Page page, Long id, String tag) {
-        try {
-            Files.createDirectories(Path.of(screenshotDir));
-            page.screenshot(new Page.ScreenshotOptions()
-                    .setPath(Path.of(screenshotDir, id + "-" + tag + ".png")).setFullPage(true));
-        } catch (Exception ignored) { }
+    private String aiAnswer(String question, UserProfile u, JobListingDto job) {
+        String jd = job.getDescription() == null ? "" :
+                job.getDescription().substring(0, Math.min(2000, job.getDescription().length()));
+        String a = chatClientBuilder.build().prompt()
+                .system("""
+                        Answer a job application question in first person, max 120 words, plain text.
+                        Use ONLY facts in the candidate profile. If the profile lacks the facts, reply exactly: UNKNOWN.
+                        """)
+                .user(x -> x.text("""
+                        QUESTION: {q}
+                        PROFILE: {summary}; skills: {skills}; experience: {yrs} years
+                        JOB: {title} at {company}
+                        {jd}
+                        """)
+                        .param("q", question)
+                        .param("summary", String.valueOf(u.getProfileSummary()))
+                        .param("skills", String.valueOf(u.getSkills()))
+                        .param("yrs", String.valueOf(u.getTotalExperienceYears()))
+                        .param("title", String.valueOf(job.getTitle()))
+                        .param("company", String.valueOf(job.getCompany()))
+                        .param("jd", jd))
+                .call().content();
+        return a == null || a.trim().equalsIgnoreCase("UNKNOWN") ? null : a.trim();
     }
 }
