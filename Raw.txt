@@ -27,4 +27,11 @@ Java 21, Spring Boot, PostgreSQL, Redis, Spring Security, JWT, AWS, Docker
 	• Implemented Spring Security, JWT authentication, and RBAC, securing APIs for USER, SELLER, and ADMIN roles.
 	• Improved performance and reliability through Redis caching, asynchronous email processing, and optimistic locking for concurrent inventory updates.
 	• Deployed the application on AWS EC2 and Amazon RDS using Docker Compose and managed database versioning with Flyway.
+
+
+Languages Java, SQL, Python
+Backend Spring Boot, Spring Security, REST APIs, JWT
+Databases PostgreSQL, MySQL, MongoDB, Redis
+Cloud & DevOps AWS (EC2, RDS), GCP, Docker
+Tools & ORM Git, GitHub, Maven, JPA/Hibernate, Postman
 	
