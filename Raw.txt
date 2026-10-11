@@ -35,3 +35,13 @@ Databases PostgreSQL, MySQL, MongoDB, Redis
 Cloud & DevOps AWS (EC2, RDS), GCP, Docker
 Tools & ORM Git, GitHub, Maven, JPA/Hibernate, Postman
 	
+EDUCATION
+Graphic Era University – B.Tech (Computer Science) 2020 - 2024 | Dehradun, Uttarakhand
+CGPA: 8.9 / 10
+Hayde Heritage Academy – Class XII 2020 | Kotdwar, Uttarakhand
+Percentage: 86%
+
+CERTIFICATIONS
+Coforge GET – Data Engineering Nov 2024 – Feb 2025
+Host Organization: Great Learning
+• Completed hands-on training in Python, SQL, MongoDB, Hadoop, Spark, and Azure
