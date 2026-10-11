@@ -13,6 +13,7 @@ Projects:
 
 
 AI_JobAutomation_EasyApply    https://github.com/Parul101shah/AI_JobAutomation_EasyApply 
+Java, Spring Boot, OpenAI API, PostgreSQL, Playwright, Docker, GCP, Multithreading
 
 	• Built an AI-powered job automation platform integrating Java, Spring Boot, OpenAI, PostgreSQL, Playwright, and Docker.
 	• Aggregated jobs from 14+ sources using asynchronous processing and multithreading, reducing matching time from 138s to 30s (4.6× improvement).
@@ -20,7 +21,7 @@ AI_JobAutomation_EasyApply    https://github.com/Parul101shah/AI_JobAutomation_E
 	• Containerized and deployed the platform on GCP Compute Engine using Docker Compose and PostgreSQL.
 	
 Ecommerce Spring Boot App      https://github.com/Parul101shah/Ecommerce_SpringBoot_App
-Spring Boot, React, PostgreSQL, Spring Security, JWT, AWS, Docker
+Java 21, Spring Boot, PostgreSQL, Redis, Spring Security, JWT, AWS, Docker
 
 	• Developed a full-stack e-commerce backend using Java 21, Spring Boot, PostgreSQL, Redis, and JWT, supporting product, cart, order, and payment workflows.
 	• Implemented Spring Security, JWT authentication, and RBAC, securing APIs for USER, SELLER, and ADMIN roles.
