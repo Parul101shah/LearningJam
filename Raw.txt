@@ -1,3 +1,7 @@
+About Me 
+
+Software Engineer with 2+ years of professional experience building and maintaining backend systems for travel domain applications using Java, Spring Boot, REST APIs, and PostgreSQL. Experienced in improving application reliability and efficiency, and in collaborating with QA, support, and development teams to analyse recurring incidents and implement preventive fixes that reduce operational overhead. Also build personal projects involving AI integration, automation, and full-stack development, with working knowledge of Docker and cloud deployment.
+
 Professional
 	• Delivered application enhancements and bug fixes for Sabre travel platforms using Java, Spring Boot, REST APIs, .
 	• Automated PNR creation and validation through  TDS scripts, significantly reducing manual verification efforts and improving testing efficiency.
@@ -17,3 +21,4 @@ E-commerce:
 	• Implemented Spring Security, JWT authentication, and RBAC, securing APIs for USER, SELLER, and ADMIN roles.
 	• Improved performance and reliability through Redis caching, asynchronous email processing, and optimistic locking for concurrent inventory updates.
 	• Deployed the application on AWS EC2 and Amazon RDS using Docker Compose and managed database versioning with Flyway.
+	
