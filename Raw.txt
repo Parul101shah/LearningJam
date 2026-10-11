@@ -1,61 +1,19 @@
-# ---------- Build stage ----------
-FROM maven:3.9-eclipse-temurin-17 AS build
-WORKDIR /app
-COPY pom.xml .
-RUN mvn -B dependency:go-offline
-COPY src ./src
-RUN mvn -B clean package -DskipTests
-
-# ---------- Runtime stage ----------
-# Match the Playwright version in pom.xml (1.49.0)
-FROM mcr.microsoft.com/playwright/java:v1.49.0-jammy
-WORKDIR /app
-
-COPY --from=build /app/target/JobAutomation-0.0.1-SNAPSHOT.jar app.jar
-
-# Use preinstalled browsers; don't download at runtime
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-
-RUN mkdir -p /app/apply-screenshots
-EXPOSE 8080
-ENTRYPOINT ["java", "-jar", "app.jar"]
+Professional
+	• Delivered application enhancements and bug fixes for Sabre travel platforms using Java, Spring Boot, REST APIs, .
+	• Automated PNR creation and validation through  TDS scripts, significantly reducing manual verification efforts and improving testing efficiency.
+	• Collaborated with QA, support, and development teams to analyse recurring incidents and implement preventive fixes, reducing investigation effort and operational overhead.
 
 
-services:
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: jobautomation
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      retries: 10
 
-  app:
-    build: .
-    depends_on:
-      db:
-        condition: service_healthy
-    ports:
-      - "8080:8080"
-    environment:
-      DB_URL: jdbc:postgresql://db:5432/jobautomation
-      DB_USERNAME: postgres
-      DB_PASSWORD: ${DB_PASSWORD}
-      OPENAI_KEY: ${OPENAI_KEY}
-      MAIL_USER: ${MAIL_USER}
-      MAIL_APP_PASSWORD: ${MAIL_APP_PASSWORD}
-      APP_BASE_URL: http://localhost:8080
-    shm_size: "1gb"            # Chromium needs more shared memory
-    volumes:
-      - ./apply-screenshots:/app/apply-screenshots
+Job automation : 
+	• Built an AI-powered job automation platform integrating Java, Spring Boot, OpenAI, PostgreSQL, Playwright, and Docker.
+	• Aggregated jobs from 14+ sources using asynchronous processing and multithreading, reducing matching time from 138s to 30s (4.6× improvement).
+	• Designed a hybrid keyword + LLM ranking engine, reducing AI evaluations by 84% (50 → 8 jobs) and lowering inference costs.
+	• Containerized and deployed the platform on GCP Compute Engine using Docker Compose and PostgreSQL.
+	
+E-commerce:
 
-volumes:
-  pgdata:
+	• Developed a full-stack e-commerce backend using Java 21, Spring Boot, PostgreSQL, Redis, and JWT, supporting product, cart, order, and payment workflows.
+	• Implemented Spring Security, JWT authentication, and RBAC, securing APIs for USER, SELLER, and ADMIN roles.
+	• Improved performance and reliability through Redis caching, asynchronous email processing, and optimistic locking for concurrent inventory updates.
+	• Deployed the application on AWS EC2 and Amazon RDS using Docker Compose and managed database versioning with Flyway.
