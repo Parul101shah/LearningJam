@@ -1,3 +1,7 @@
+PARUL SHAH
+Software Engineer
+parulpd1538@gmail.com • linkedin.com/in/shah-parul • +91 7618407482 • github.com/Parul101shah
+
 About Me 
 
 Software Engineer with 2+ years of professional experience building and maintaining backend systems for travel domain applications using Java, Spring Boot, REST APIs, and PostgreSQL. Experienced in improving application reliability and efficiency, and in collaborating with QA, support, and development teams to analyse recurring incidents and implement preventive fixes that reduce operational overhead. Also build personal projects involving AI integration, automation, and full-stack development, with working knowledge of Docker and cloud deployment.
